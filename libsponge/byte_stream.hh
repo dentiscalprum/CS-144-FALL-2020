@@ -3,6 +3,9 @@
 
 #include <string>
 
+#include <vector>
+#include <string.h>
+#include <algorithm>
 //! \brief An in-order byte stream.
 
 //! Bytes are written on the "input" side and read from the "output"
@@ -11,6 +14,14 @@
 class ByteStream {
   private:
     // Your code here -- add private members as necessary.
+    const size_t capacity_;
+    std::vector<char> data_;
+    size_t start_, end_, size_;
+
+    bool end_input_;
+
+    size_t total_written_;
+    size_t total_read_;
 
     // Hint: This doesn't need to be a sophisticated data structure at
     // all, but if any of your tests are taking longer than a second,
