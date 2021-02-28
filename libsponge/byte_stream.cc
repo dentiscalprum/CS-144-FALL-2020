@@ -41,7 +41,7 @@ size_t ByteStream::write(const string &data)
     }
 
     size_t len_write = min(end_-start_, len-already_write);
-    memcpy(&*(data_.begin()+end_), data.c_str(), len_write);
+    memcpy(&*(data_.begin()+end_), data.c_str() + already_write, len_write);
 
     end_ += len_write;
     already_write += len_write;
