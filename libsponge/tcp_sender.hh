@@ -8,6 +8,17 @@
 
 #include <functional>
 #include <queue>
+#include <map>
+#include <vector>
+
+enum TcpState {
+    CLOSED = 0,
+    SYN_SENT,
+    SYN_ACKED,
+    FIN_SENT,
+    FIN_ACKED
+};
+
 
 //! \brief The "sender" part of a TCP implementation.
 
@@ -30,8 +41,18 @@ class TCPSender {
     ByteStream _stream;
 
     //! the (absolute) sequence number for the next byte to be sent
-    uint64_t _next_seqno{0};
+    uint64_t        _next_seqno{0};
+    uint64_t        unack_seq_left_{0};
+    uint16_t        window_size_{1};
+    TcpState        state_{CLOSED};
+    unsigned int    cur_retransmission_timeout_;
+    size_t          retransmission_timer_{0};
 
+    std::map<uint64_t, TCPSegment>  unack_segment_{};
+
+    unsigned int    consecutive_retransmissions_{0};
+
+    void sendSegment(const TCPSegment &segment, uint64_t absolute_seq);
   public:
     //! Initialize a TCPSender
     TCPSender(const size_t capacity = TCPConfig::DEFAULT_CAPACITY,
