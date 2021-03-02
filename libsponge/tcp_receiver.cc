@@ -34,6 +34,14 @@ void TCPReceiver::segment_received(const TCPSegment &seg)
         eof_ = true;
     }
     
+    uint64_t max_seq = _reassembler.stream_out().bytes_read() + _capacity + 1;
+    if(seg.header().fin) {
+        max_seq += 1;
+    }
+
+    if(absoluteSeqno + seg.length_in_sequence_space() > max_seq) {
+        return;
+    }
     _reassembler.push_substring(seg.payload().copy(), streamIndex, eof);
 }
 
