@@ -100,6 +100,10 @@ void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_si
         state_ = SYN_ACKED;
     }
     uint64_t absoluteAckno = unwrap(ackno, _isn, unack_seq_left_);
+    if(absoluteAckno > _next_seqno) {
+        return;
+    }
+    
     for(auto iter = unack_segment_.begin(); iter != unack_segment_.end();) {
         if(iter->first < absoluteAckno && iter->first + iter->second.length_in_sequence_space() <= absoluteAckno) {
             unack_segment_.erase(iter++);
