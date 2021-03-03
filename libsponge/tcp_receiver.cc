@@ -26,13 +26,7 @@ void TCPReceiver::segment_received(const TCPSegment &seg)
 
     uint64_t absoluteSeqno = unwrap(startSeqno, isn_, checkpoint_);
     checkpoint_ = absoluteSeqno;
-
     uint64_t streamIndex = absoluteSeqno - 1;
-    bool eof = false;
-    if(seg.header().fin) {
-        eof = true;
-        eof_ = true;
-    }
     
     uint64_t max_seq = _reassembler.stream_out().bytes_read() + _capacity + 1;
     if(seg.header().fin) {
@@ -40,7 +34,16 @@ void TCPReceiver::segment_received(const TCPSegment &seg)
     }
 
     if(absoluteSeqno + seg.length_in_sequence_space() > max_seq) {
+        if(max_seq > absoluteSeqno) {
+            _reassembler.push_substring(seg.payload().copy().substr(0, max_seq - absoluteSeqno), streamIndex, false);
+        }
         return;
+    }
+
+    bool eof = false;
+    if(seg.header().fin) {
+        eof = true;
+        eof_ = true;
     }
     _reassembler.push_substring(seg.payload().copy(), streamIndex, eof);
 }
