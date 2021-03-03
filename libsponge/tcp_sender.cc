@@ -5,7 +5,8 @@
 #include <random>
 #include <algorithm>
 #include <string>
-
+#include <stdio.h>
+#include <iostream>
 // Dummy implementation of a TCP sender
 
 // For Lab 3, please replace with a real implementation that passes the
@@ -23,72 +24,64 @@ TCPSender::TCPSender(const size_t capacity, const uint16_t retx_timeout, const s
     : _isn(fixed_isn.value_or(WrappingInt32{random_device()()}))
     , _initial_retransmission_timeout{retx_timeout}
     , _stream(capacity)
-    , cur_retransmission_timeout_(_initial_retransmission_timeout)
+    , _cur_retransmission_timeout(_initial_retransmission_timeout)
     {}
 
 uint64_t TCPSender::bytes_in_flight() const
 {
-    return _next_seqno - unack_seq_left_;
+    return _next_seqno - _unack_seq_left;
 }
 
-void TCPSender::sendSegment(const TCPSegment &segment, uint64_t absolute_seq) {
+void TCPSender::send_segment(const TCPSegment &segment, uint64_t absolute_seq) {
     _segments_out.push(segment);
-    if(unack_segment_.empty()) retransmission_timer_ = 0;
-    if(!unack_segment_.count(absolute_seq)) unack_segment_[absolute_seq] = segment;
+    if(_unack_segment.empty()) _retransmission_timer = 0;
+    if(!_unack_segment.count(absolute_seq)) _unack_segment[absolute_seq] = segment;
 }
 
 void TCPSender::fill_window()
 {
-    uint64_t absolute_seq;
     TCPSegment segment;
     auto &header = segment.header();
 
-
-    switch(state_) {
-    case CLOSED:
+    if(_next_seqno == 0) {
         header.syn = true;
         header.seqno = _isn;
+
         _next_seqno = 1;
-        absolute_seq = 0;
-        state_ = SYN_SENT;
-        sendSegment(segment, absolute_seq);
-        break;
-    case SYN_ACKED:
+        send_segment(segment, 0);
+    } else {
         while(true) {
-            uint16_t window_size = window_size_;
+            uint16_t window_size = _window_size;
             if(window_size == 0) {
                 window_size = 1;
             }
 
-            absolute_seq = _next_seqno;
+            uint16_t absolute_seq = _next_seqno;
             header.seqno = wrap(_next_seqno, _isn);
 
-            size_t len_data = min(window_size - (_next_seqno - unack_seq_left_), 
-                        TCPConfig::MAX_PAYLOAD_SIZE);
+            size_t len_data = min(window_size - (_next_seqno - _unack_seq_left), TCPConfig::MAX_PAYLOAD_SIZE);
             auto data = _stream.read(len_data);
 
-            bool haveSegment = false;
+            bool have_segment = false;
             if(data.size() != 0) {
                 _next_seqno += data.size();
                 segment.payload() = Buffer(std::move(data));
-                haveSegment = true;
+                have_segment = true;
             }
-            if(_stream.eof() && window_size - (_next_seqno - unack_seq_left_) > 0 &&
-                    state_ != FIN_SENT) {
-                header.fin = true;
-                state_ = FIN_SENT;
-                _next_seqno++;
-                haveSegment = true;
-            } 
 
-            if(haveSegment == true) {
-                sendSegment(segment, absolute_seq);
-            } else {
-                break;
+            if(_stream.eof() && window_size - (_next_seqno - _unack_seq_left) > 0 &&
+                        _next_seqno < _stream.bytes_written() + 2) {
+                header.fin = true;
+                _next_seqno++;
+                have_segment = true;
             }
+
+            if(have_segment) {
+                cout << segment.header().to_string();
+                send_segment(segment, absolute_seq);
+                if(_window_size == 0) break;
+            } else break;
         }
-    default:
-        break;
     }
 }
 
@@ -96,52 +89,49 @@ void TCPSender::fill_window()
 //! \param window_size The remote receiver's advertised window size
 void TCPSender::ack_received(const WrappingInt32 ackno, const uint16_t window_size)
 {
-    if(ackno == _isn + 1 && state_ == SYN_SENT) {
-        state_ = SYN_ACKED;
-    }
-    uint64_t absoluteAckno = unwrap(ackno, _isn, unack_seq_left_);
-    if(absoluteAckno > _next_seqno) {
+    uint64_t absoluteAckno = unwrap(ackno, _isn, _unack_seq_left);
+    if(absoluteAckno > _next_seqno || absoluteAckno < _unack_seq_left) {
         return;
     }
     
-    for(auto iter = unack_segment_.begin(); iter != unack_segment_.end();) {
-        if(iter->first < absoluteAckno && iter->first + iter->second.length_in_sequence_space() <= absoluteAckno) {
-            unack_segment_.erase(iter++);
-        } else {
-            break;
-        }
+    for(auto iter = _unack_segment.begin(); iter != _unack_segment.end(); ) {
+        if(iter->first + iter->second.length_in_sequence_space() <= absoluteAckno) {
+            _unack_segment.erase(iter++);
+        } else break;
     }
-    if(absoluteAckno > unack_seq_left_) {
-        unack_seq_left_ = absoluteAckno;
-        consecutive_retransmissions_ = 0;
-        cur_retransmission_timeout_ = _initial_retransmission_timeout;
-        retransmission_timer_ = 0;
+
+    if(absoluteAckno > _unack_seq_left) {
+        _unack_seq_left = absoluteAckno;
+        _consecutive_retransmissions = 0;
+        _cur_retransmission_timeout = _initial_retransmission_timeout;
+        _retransmission_timer = 0;
     }
-    window_size_ = window_size;
+    _window_size = window_size;
 }
 
 //! \param[in] ms_since_last_tick the number of milliseconds since the last call to this method
 void TCPSender::tick(const size_t ms_since_last_tick)
 {
-    if(retransmission_timer_ + ms_since_last_tick < cur_retransmission_timeout_ || 
-            unack_segment_.empty()) {
-        retransmission_timer_ += ms_since_last_tick;
+    if(_unack_segment.empty()) {
+        return;
+    } else if(_retransmission_timer + ms_since_last_tick < _cur_retransmission_timeout) {
+        _retransmission_timer += ms_since_last_tick;
         return;
     }
 
-    if(window_size_ != 0) {
-        consecutive_retransmissions_++;
-        cur_retransmission_timeout_ *= 2;
+    if(_window_size != 0) {
+        _consecutive_retransmissions++;
+        _cur_retransmission_timeout *= 2;
     }
-    retransmission_timer_ = 0;
+    _retransmission_timer = 0;
 
-    auto begin = unack_segment_.begin();
-    sendSegment(begin->second, begin->first);
+    auto begin = _unack_segment.begin();
+    send_segment(begin->second, begin->first);
 }
 
 unsigned int TCPSender::consecutive_retransmissions() const
 {
-    return consecutive_retransmissions_;
+    return _consecutive_retransmissions;
 }
 
 void TCPSender::send_empty_segment()
