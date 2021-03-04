@@ -12,7 +12,10 @@ void DUMMY_CODE(Targs &&... /* unused */) {}
 
 using namespace std;
 
-size_t TCPConnection::remaining_outbound_capacity() const { return {}; }
+size_t TCPConnection::remaining_outbound_capacity() const
+{
+    return _receiver.window_size();
+}
 
 size_t TCPConnection::bytes_in_flight() const { return _sender.bytes_in_flight(); }
 
@@ -27,68 +30,36 @@ void TCPConnection::segment_received(const TCPSegment &seg)
 {
     _time_since_last_segment_received = 0;
     const auto &header = seg.header();
+
     if(header.rst) {
         reset_connection();
         return;
+    } else if(!header.syn && !_receiver.ackno().has_value()) {
+        return;
     }
 
-    if(seg.length_in_sequence_space()) {
-        _receiver.segment_received(seg);
-    }
+    _receiver.segment_received(seg);
 
     if(header.ack) {
         _sender.ack_received(header.ackno, header.win);
-        
-        if(header.syn) {
-            _state = State::ESTABLISHED;
-            _active = true;
-        } else if(_state == State::SYN_RCVD) {
-            _state = State::ESTABLISHED;
-        }
-    } else if(header.syn) {
-        _state = State::SYN_RCVD;
-        _active = true;
-    }
-
-    if(_state != State::CLOSED) {
-        _sender.fill_window();
-        if(send_out_segment() > 0) return;
     }
 
     if(seg.length_in_sequence_space()) {
-        TCPSegment ack_seg;
-        auto &ack_header = ack_seg.header();
-        ack_header.ack = true;
-        ack_header.ackno = *_receiver.ackno();
-        ack_header.win = static_cast<uint16_t>(_receiver.window_size());
-        _segments_out.push(ack_seg);
+        send_out_segment(AT_LEAST_ONCE);
+    } else {
+        send_out_segment(TRY_MY_BEST);
     }
 
     if(judge_fin_acked()) {
-        switch(_state) {
-        case State::FIN_WAIT1:
-        case State::FIN_WAIT2:
-        case State::CLOSING:
-        case State::TIME_WAIT:
-            _timer = 0;
-            _state = State::TIME_WAIT;
-            break;
-        case State::LAST_ACK:
+        if(_active_close) {
+            _linger_timer = 0;
+            _linger_after_streams_finish = true;
+        } else {
             _active = false;
-            _state = State::CLOSED;
-            break;
-        default:
-            break;
         }
     } else {
-        if(header.fin == true) {
-            if(_state == State::FIN_WAIT1) {
-                _state = State::CLOSING;
-            } else {
-                _state = State::CLOSE_WAIT;
-                _timer = 0;
-                _linger_after_streams_finish = false;
-            }
+        if(header.fin && _active_close == false) {
+            _linger_after_streams_finish = false;
         }
     }
 }
@@ -98,9 +69,7 @@ bool TCPConnection::active() const { return _active; }
 size_t TCPConnection::write(const string &data)
 {
     auto write_bytes = _sender.stream_in().write(data);
-
-    _sender.fill_window();
-    send_out_segment();
+    send_out_segment(TRY_MY_BEST);
     return write_bytes;
 }
 
@@ -109,18 +78,18 @@ void TCPConnection::tick(const size_t ms_since_last_tick)
 {
     _time_since_last_segment_received += ms_since_last_tick;
 
-    if(_state == State::TIME_WAIT) {
-        if(_timer + ms_since_last_tick < 10 * _cfg.rt_timeout) {
-            _timer += ms_since_last_tick;
+    if(_linger_after_streams_finish && judge_fin_acked()) {
+        if(_linger_timer + ms_since_last_tick < 10 * _cfg.rt_timeout) {
+            _linger_timer += ms_since_last_tick;
         } else {
-            _state = State::CLOSED;
+            _linger_after_streams_finish = false;
             _active = false;
             return;
         }
     }  
 
     _sender.tick(ms_since_last_tick);
-    send_out_segment();
+    send_out_segment(TICK);
 
     if(_sender.consecutive_retransmissions() > TCPConfig::MAX_RETX_ATTEMPTS) {
         _segments_out = queue<TCPSegment>();
@@ -138,26 +107,17 @@ void TCPConnection::tick(const size_t ms_since_last_tick)
 void TCPConnection::end_input_stream()
 {
     _sender.stream_in().end_input();
-
-    _sender.fill_window();
-    send_out_segment();
-
-    switch(_state) {
-    case State::ESTABLISHED:
-        _state = State::FIN_WAIT1;
-        break;
-    case State::CLOSE_WAIT:
-        _state = State::LAST_ACK;
-        break;
-    default:
-        break;
+    
+    if(!_receiver.stream_out().input_ended()) {
+        _active_close = true;
     }
+
+    send_out_segment(TRY_MY_BEST);
 }
 
 void TCPConnection::connect()
 {
-    _sender.fill_window();
-    send_out_segment();
+    send_out_segment(TRY_MY_BEST);
 }
 
 TCPConnection::~TCPConnection() {
@@ -172,32 +132,27 @@ TCPConnection::~TCPConnection() {
     }
 }
 
-int TCPConnection::send_out_segment()
+void TCPConnection::send_out_segment(SendsegmentMode mode)
 {
-    int num = 0;
+    if(mode != TICK) {
+        _sender.fill_window();
+        if(mode == AT_LEAST_ONCE && _sender.segments_out().empty())  _sender.send_empty_segment();
+    }
+
     const auto opt_ackno = _receiver.ackno();
     const uint16_t win = static_cast<uint16_t>(_receiver.window_size());
-
     while(!_sender.segments_out().empty()) {
-        num++;
         auto segment = _sender.segments_out().front();
         _sender.segments_out().pop();
-
+        
         auto &header = segment.header();
-        if(opt_ackno) {
+        if(opt_ackno.has_value()) {
             header.ack = true;
             header.ackno = *opt_ackno;
         }
         header.win = win;
         _segments_out.push(std::move(segment));
     }
-    return num;
-}
-
-bool TCPConnection::judge_fin_acked()
-{
-   return _sender.stream_in().eof() && _sender.next_seqno_absolute() == _sender.stream_in().bytes_written() + 2 
-                && _sender.bytes_in_flight() == 0; 
 }
 
 void TCPConnection::reset_connection()
@@ -206,4 +161,10 @@ void TCPConnection::reset_connection()
     _receiver.stream_out().set_error();
     _active = false;
     _linger_after_streams_finish = false;
+}
+
+bool TCPConnection::judge_fin_acked() {
+    auto &sender_stream = _sender.stream_in();
+    return sender_stream.eof() && _sender.next_seqno_absolute() == sender_stream.bytes_written() + 2
+        && _sender.bytes_in_flight() == 0;
 }

@@ -77,7 +77,6 @@ void TCPSender::fill_window()
             }
 
             if(have_segment) {
-                cout << segment.header().to_string();
                 send_segment(segment, absolute_seq);
                 if(_window_size == 0) break;
             } else break;

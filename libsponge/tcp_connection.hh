@@ -6,19 +6,6 @@
 #include "tcp_sender.hh"
 #include "tcp_state.hh"
 
-enum class TcpConnectionState {
-    CLOSED = 0,
-    SYN_SENT,
-    SYN_RCVD,
-    ESTABLISHED,
-    FIN_WAIT1,
-    FIN_WAIT2,
-    CLOSING,
-    CLOSE_WAIT,
-    LAST_ACK,
-    TIME_WAIT,
-};
-
 //! \brief A complete endpoint of a TCP connection
 class TCPConnection {
   private:
@@ -34,16 +21,20 @@ class TCPConnection {
     //! in case the remote TCPConnection doesn't know we've received its whole stream?
     bool _linger_after_streams_finish{true};
     
-    bool                _active{true};
+    bool                _active{true}, _active_close{false};
 
-    using State = TcpConnectionState;
-    State               _state{State::CLOSED};
-    size_t              _timer{0};
+    size_t              _linger_timer{0};
     size_t              _time_since_last_segment_received{0};
 
-    int send_out_segment();
-    bool judge_fin_acked();
+
+    enum SendsegmentMode {
+        TICK = 0,
+        AT_LEAST_ONCE,
+        TRY_MY_BEST,
+    };
     void reset_connection();
+    void send_out_segment(SendsegmentMode mode);
+    bool judge_fin_acked();
   public:
     //! \name "Input" interface for the writer
     //!@{
