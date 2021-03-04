@@ -20,7 +20,21 @@ class TCPConnection {
     //! for 10 * _cfg.rt_timeout milliseconds after both streams have ended,
     //! in case the remote TCPConnection doesn't know we've received its whole stream?
     bool _linger_after_streams_finish{true};
+    
+    bool                _active{true}, _active_close{false};
 
+    size_t              _linger_timer{0};
+    size_t              _time_since_last_segment_received{0};
+
+
+    enum SendsegmentMode {
+        TICK = 0,
+        AT_LEAST_ONCE,
+        TRY_MY_BEST,
+    };
+    void reset_connection();
+    void send_out_segment(SendsegmentMode mode);
+    bool judge_fin_acked();
   public:
     //! \name "Input" interface for the writer
     //!@{

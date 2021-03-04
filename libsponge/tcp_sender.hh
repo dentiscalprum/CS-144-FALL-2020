@@ -8,6 +8,8 @@
 
 #include <functional>
 #include <queue>
+#include <map>
+#include <vector>
 
 //! \brief The "sender" part of a TCP implementation.
 
@@ -30,8 +32,18 @@ class TCPSender {
     ByteStream _stream;
 
     //! the (absolute) sequence number for the next byte to be sent
-    uint64_t _next_seqno{0};
+    uint64_t        _next_seqno{0};
 
+    uint64_t        _unack_seq_left{0};
+    uint16_t        _window_size{1};
+    unsigned int    _cur_retransmission_timeout;
+    size_t          _retransmission_timer{0};
+
+    std::map<uint64_t, TCPSegment>  _unack_segment{};
+
+    unsigned int    _consecutive_retransmissions{0};
+
+    void send_segment(const TCPSegment &segment, uint64_t absolute_seq);
   public:
     //! Initialize a TCPSender
     TCPSender(const size_t capacity = TCPConfig::DEFAULT_CAPACITY,
