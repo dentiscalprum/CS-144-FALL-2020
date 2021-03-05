@@ -1,7 +1,7 @@
 #include "router.hh"
 
 #include <iostream>
-#include <stdio.h>
+
 using namespace std;
 
 // Dummy implementation of an IP router
@@ -32,7 +32,7 @@ void Router::add_route(const uint32_t route_prefix,
     DUMMY_CODE(route_prefix, prefix_length, next_hop, interface_num);
     // Your code here.
     _routing_table.insert(route_prefix, prefix_length, next_hop, interface_num);
-    _routing_table.debug_print();
+    //_routing_table.debug_print();
 }
 
 //! \param[in] dgram The datagram to be routed
@@ -40,13 +40,14 @@ void Router::route_one_datagram(InternetDatagram &dgram) {
     DUMMY_CODE(dgram);
     // Your code here.
     auto &header = dgram.header();
+
+    if(header.ttl <= 1) return;     // interger underflow
     header.ttl--;
-    if(header.ttl <= 0) return;
 
     pair<optional<Address>, size_t> route_pair;
     if(_routing_table.find(header.dst, route_pair) == false) return;
 
-    auto next_hop = route_pair.first.has_value() ? *(route_pair.first) 
+    auto next_hop = route_pair.first.has_value() ? *(route_pair.first)
             : Address::from_ipv4_numeric(header.dst);
     interface(route_pair.second).send_datagram(dgram, next_hop);
 }
@@ -74,25 +75,22 @@ TrieNode::~TrieNode()
 void TrieNode::insert(const uint32_t route_prefix, const uint8_t prefix_length,
                         const optional<Address> next_hop, const size_t interface_num)
 {
-    if(_bit_loc == 0) {
-        cerr << Address::from_ipv4_numeric(route_prefix).to_string() << endl;
-    }
-    if(_bit_loc == prefix_length) {
-        if(_end == false) {
-            _end = true;
-            _next_hop = next_hop;
-            _interface_num = interface_num;
+    size_t index = 31;
+    TrieNode *current_node = this;
+    for(uint8_t loop = 0; loop < prefix_length; loop++) {
+        const uint32_t mask_bit = 1 << index;
+        int next_loc = (route_prefix & mask_bit) >> index;
+        cout << next_loc;
+        if(current_node->_nexts[next_loc] == NULL) {
+            current_node->_nexts[next_loc] = new TrieNode(32 - index);
         }
-        return;
+        current_node = current_node->_nexts[next_loc];
+        index--;
     }
 
-    const uint32_t mask_bit = 1 << _bit_loc;
-    int next_loc = (route_prefix & mask_bit) >> _bit_loc;
-
-    if(_nexts[next_loc] == NULL) {
-        _nexts[next_loc] = new TrieNode(_bit_loc + 1);
-    }
-    _nexts[next_loc]->insert(route_prefix, prefix_length, next_hop, interface_num);
+    current_node->_end = true;
+    current_node->_next_hop = next_hop;
+    current_node->_interface_num = interface_num;
 }
 
 bool TrieNode::find(const uint32_t ip, pair<optional<Address>, size_t> &result)
@@ -100,7 +98,7 @@ bool TrieNode::find(const uint32_t ip, pair<optional<Address>, size_t> &result)
     bool is_find = false;
 
     TrieNode *current_node = this;
-    for(int i = 0; ; i++) {
+    for(int i = 31; i >= 0; i--) {
         if(current_node->_end == true) {
             is_find = true;
             result = make_pair(current_node->_next_hop, current_node->_interface_num);
@@ -110,18 +108,17 @@ bool TrieNode::find(const uint32_t ip, pair<optional<Address>, size_t> &result)
         const uint32_t mask_bit = 1 << i;
         int next_loc = (ip & mask_bit) >> i;
 
-        if(_nexts[next_loc] == NULL) {
+        if(current_node->_nexts[next_loc] == NULL) {
             break;
         }
-
-        current_node = _nexts[next_loc];
+        current_node = current_node->_nexts[next_loc];
     }
 
-    if(is_find) {
-        cerr << "\033[33m(find) next_hop: "
-            << (result.first.has_value() ? result.first->to_string() : "(direct)")
-            << ", interface_num: " << result.second << "\033[0m" << endl;
-    }
+    // if(is_find) {
+    //     cerr << "\033[33m(find) next_hop: "
+    //         << (result.first.has_value() ? result.first->to_string() : "(direct)")
+    //         << ", interface_num: " << result.second << "\033[0m" << endl;
+    // }
     return is_find;
 }
 

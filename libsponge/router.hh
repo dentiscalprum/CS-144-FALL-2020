@@ -55,7 +55,7 @@ public:
     TrieNode &operator=(const TrieNode &) = delete;
     ~TrieNode();
 
-    void insert(const uint32_t route_prefix, const uint8_t prefix_length, 
+    void insert(const uint32_t route_prefix, const uint8_t prefix_length,
                 const std::optional<Address> next_hop,
                 const size_t interface_num);
     bool find(const uint32_t ip, std::pair<std::optional<Address>, size_t> &result);
